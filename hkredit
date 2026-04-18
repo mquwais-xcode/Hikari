@@ -1,0 +1,103 @@
+#!/bin/bash
+
+# Path direktori kerja
+DOWNLOAD_DIR="/data/data/com.termux/files/home/storage/downloads"
+cd "$DOWNLOAD_DIR" || { echo "Directory tidak ditemukan!"; exit 1; }
+
+# Bersihkan file sampah temp jika ada sisa crash sebelumnya
+rm -f temp_h_*
+pkill -f "python -m http.server 8080"
+
+echo -e "\033[32m[+] Monitoring aktif (Mode Kumulatif).\033[0m"
+echo -e "\033[32m[+] Nama file hasil: video1.mp4 - video5.mp4 per folder.\033[0m"
+
+while true; do
+    # 1. HITUNG JUMLAH FILE YANG SUDAH JADI
+    TOTAL_SELESAI=$(find edit_? edit_1[0-5] -name "video*.mp4" 2>/dev/null | wc -l)
+
+    # 2. CEK LIMIT 15 FOLDER (75 VIDEO)
+    if [ "$TOTAL_SELESAI" -ge 75 ]; then
+        echo -e "\n\033[35m[!] Kuota maksimal (15 folder/75 video) terpenuhi!\033[0m"
+        echo -e "\033[34m[*] Mengompres semua hasil ke kerja.zip...\033[0m"
+        rm -f kerja.zip
+        zip -r kerja.zip edit_* > /dev/null
+
+        tput bel
+        IP_SAYA=$(ifconfig wlan0 | grep 'inet ' | awk '{print $2}' | sed 's/addr://')
+        echo -e "\033[36m"
+        echo "===================================================="
+        echo " STATUS: SELESAI & TERKUNCI"
+        echo " Link: http://${IP_SAYA:-127.0.0.1}:8080/kerja.zip"
+        echo "===================================================="
+        echo -e "\033[0m"
+
+        python -m http.server 8080
+        exit 0
+    fi
+
+    # 3. DETEKSI VIDEO BARU
+    mapfile -t VIDEO_BARU < <(find . -maxdepth 1 -name "*.mp4" -type f ! -name "temp_h*" ! -name "video*" -not -path '*/.*')
+
+    if [ ${#VIDEO_BARU[@]} -gt 0 ]; then
+        for VIDEO_PATH in "${VIDEO_BARU[@]}"; do
+            VIDEO_NAME=$(basename "$VIDEO_PATH")
+            echo -e "\n\033[33m[*] Memproses video baru: $VIDEO_NAME\033[0m"
+
+            ffmpeg -v error -i "$VIDEO_NAME" -f segment -segment_time 120 -c copy -reset_timestamps 1 "temp_h_%03d.mp4" -y
+            rm "$VIDEO_NAME"
+
+            mapfile -t SEGMENTS < <(ls temp_h_*.mp4 2>/dev/null)
+
+            for seg in "${SEGMENTS[@]}"; do
+                FOLDER_TUJUAN=""
+                NEXT_INDEX=1
+                
+                # CARI FOLDER YANG BELUM PENUH
+                for i in {1..15}; do
+                    DIR="edit_$i"
+                    [ ! -d "$DIR" ] && mkdir -p "$DIR"
+
+                    COUNT=$(ls -1 "$DIR"/video*.mp4 2>/dev/null | wc -l)
+                    if [ "$COUNT" -lt 5 ]; then
+                        FOLDER_TUJUAN="$DIR"
+                        
+                        # TENTUKAN ANGKA BERIKUTNYA (Cek video1 sampai video5)
+                        for j in {1..5}; do
+                            if [ ! -f "$DIR/video$j.mp4" ]; then
+                                NEXT_INDEX=$j
+                                break
+                            fi
+                        done
+                        break
+                    fi
+                done
+
+                if [ -z "$FOLDER_TUJUAN" ]; then
+                    echo -e "\n\033[31m[!] Semua folder sudah penuh.\033[0m"
+                    rm -f temp_h_*.mp4
+                    break 2
+                fi
+
+                FINAL_NAME="video$NEXT_INDEX.mp4"
+
+                ffmpeg -v error -i "$seg" -ignore_loop 0 -i "a.gif" -ignore_loop 0 -i "a.gif" -i "b.png" -filter_complex \
+                "[0:v]scale=-2:400,pad=720:480:(720-iw)/2:40,setsar=1[main]; \
+                 [1:v]scale=720:40[top]; \
+                 [2:v]scale=720:40[bottom]; \
+                 [3:v]scale=100:-1,format=rgba,colorchannelmixer=aa=0.8[logo_f]; \
+                 [main][top]overlay=0:0:shortest=1[v1]; \
+                 [v1][bottom]overlay=0:H-h:shortest=1[v2]; \
+                 [v2][logo_f]overlay=20:50" \
+                -map 0:a? -c:v libx264 -b:v 550k -maxrate 650k -bufsize 1000k \
+                -preset superfast -c:a aac -b:a 64k -shortest "$FOLDER_TUJUAN/$FINAL_NAME" -y
+
+                echo -e "\033[32m  [✔] Berhasil: $FOLDER_TUJUAN/$FINAL_NAME\033[0m"
+                rm "$seg"
+            done
+        done
+        CURRENT_COUNT=$(find edit_? edit_1[0-5] -name "video*.mp4" 2>/dev/null | wc -l)
+        echo -e "\n\033[32m[+] Menunggu video baru... (Progres: $CURRENT_COUNT/75)\033[0m"
+    fi
+
+    sleep 5
+done

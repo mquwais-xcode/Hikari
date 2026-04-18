@@ -1,0 +1,62 @@
+#!/bin/bash
+
+# Konfigurasi File
+FILE_LOG="link.txt"
+FILE_HITAM="blacklist.txt"
+
+# Memastikan file ada agar tidak error saat dibaca
+touch "$FILE_LOG" "$FILE_HITAM"
+
+saring_link_video() {
+    local url_target=$1
+    local user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+
+    # Mengambil konten HTML dan menyaring link yang mengandung '/video-'
+    # Menggunakan curl untuk fetch dan grep untuk ekstraksi pola
+    curl -s -L -A "$user_agent" "$url_target" | \
+    grep -oP 'href="\K/video-[^"]+' | \
+    sed "s|^|https://www.eporner.com|" | sort -u
+}
+
+proses_dan_blacklist() {
+    local links_baru=("$@")
+    local ada_link_baru=false
+
+    for link in "${links_baru[@]}"; do
+        # Cek apakah link sudah ada di blacklist.txt
+        if ! grep -qxF "$link" "$FILE_HITAM"; then
+            # Tampilkan dengan warna hijau (ANSI escape code)
+            echo -e "\e[32m$link\e[0m"
+            
+            # Simpan ke riwayat dan blacklist
+            echo "$link" >> "$FILE_LOG"
+            echo "$link" >> "$FILE_HITAM"
+            ada_link_baru=true
+        fi
+    done
+
+    if [ "$ada_link_baru" = false ]; then
+        echo "Tidak ada link video baru atau semua sudah ada di blacklist."
+    fi
+}
+
+# --- Eksekusi ---
+read -p "Username: " username
+url_input="https://www.eporner.com/profile/$username/"
+
+# Loop Utama
+while true; do
+    echo "Memulai scanning..."
+    
+    # Mengambil hasil scan ke dalam array
+    mapfile -t hasil_scan < <(saring_link_video "$url_input")
+
+    if [ ${#hasil_scan[@]} -gt 0 ]; then
+        proses_dan_blacklist "${hasil_scan[@]}"
+    else
+        echo "Tidak ditemukan link video pada URL tersebut."
+    fi
+
+    # Tambahkan jeda agar tidak terlalu membebani server/CPU
+    sleep 3
+done
